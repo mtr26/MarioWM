@@ -77,9 +77,10 @@ class FrameBuffer:
 
 
 def rgb_to_gray_norm(rgb: np.ndarray) -> np.ndarray:
-    """Convert uint8 RGB (H,W,3) → uint8 grayscale (H,W,1)."""
+    """Convert uint8 RGB (240x256) → uint8 grayscale (84x84x1) for the agent."""
     import cv2
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    resized = cv2.resize(rgb, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
     return gray[:, :, np.newaxis]  # uint8, no normalization
 
 

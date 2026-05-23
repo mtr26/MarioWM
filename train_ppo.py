@@ -90,7 +90,9 @@ class FrameBuffer:
         return self._stacked()
 
     def _to_gray(self, rgb: np.ndarray) -> np.ndarray:
-        gray = self._cv2.cvtColor(rgb, self._cv2.COLOR_RGB2GRAY)
+        # The input is 240x256 (RGB_HEIGHT x RGB_WIDTH) but the agent needs 84x84
+        resized = self._cv2.resize(rgb, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=self._cv2.INTER_AREA)
+        gray = self._cv2.cvtColor(resized, self._cv2.COLOR_RGB2GRAY)
         return gray[:, :, np.newaxis]  # uint8, no normalization
 
     def _stacked(self) -> np.ndarray:
