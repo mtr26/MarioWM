@@ -1,0 +1,22 @@
+# ─── Core RL ──────────────────────────────────────────────────────────────────
+gymnasium>=0.29.0
+stable-baselines3>=2.3.0
+gym-super-mario-bros>=7.4.0
+nes-py>=8.2.1
+
+# ─── Deep Learning ────────────────────────────────────────────────────────────
+torch>=2.2.0
+torchvision>=0.17.0
+
+# ─── Data & Visualisation ─────────────────────────────────────────────────────
+numpy>=1.26.0,<2.0  # nes-py 8.2.1 overflows with numpy 2.x uint8 arithmetic
+h5py>=3.11.0          # efficient offline dataset storage
+opencv-python>=4.9.0  # frame processing
+matplotlib>=3.8.0
+imageio>=2.34.0       # gif / video export
+imageio[ffmpeg]
+tqdm>=4.66.0
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+pyyaml>=6.0
+tensorboard>=2.16.0
