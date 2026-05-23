@@ -23,7 +23,7 @@ import cv2
 import gym as old_gym            # old OpenAI gym (pulled in by nes-py / gym-super-mario-bros)
 import gymnasium as gym
 from gymnasium import spaces
-from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFrameStack
 import gym_super_mario_bros      # noqa: F401  (registers env IDs with old gym)
 from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
@@ -216,12 +216,13 @@ def make_ppo_env() -> gym.Env:
 def make_vec_ppo_env(n_envs: int = 8, seed: int = 42) -> VecFrameStack:
     """
     Build a vectorized, frame-stacked env suitable for SB3's PPO.
+    Uses SubprocVecEnv so each NES emulator runs in its own process.
     Returns VecFrameStack wrapping n_envs parallel environments.
     """
     def _thunk():
         return make_ppo_env()
 
-    vec_env = DummyVecEnv([_thunk] * n_envs)
+    vec_env = SubprocVecEnv([_thunk] * n_envs)
     vec_env = VecFrameStack(vec_env, n_stack=N_STACK, channels_order="last")
     return vec_env
 
