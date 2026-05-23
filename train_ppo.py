@@ -388,6 +388,11 @@ def train(
     else:
         model = PPO(env=train_env, **PPO_KWARGS)
 
+    # ── Compile ───────────────────────────────────────────────────────────────
+    import torch
+    print("\n[compile] Compiling the policy with torch.compile...")
+    model.policy = torch.compile(model.policy)
+
     # ── Train ─────────────────────────────────────────────────────────────────
     model.learn(
         total_timesteps=timesteps,
