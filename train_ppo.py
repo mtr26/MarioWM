@@ -363,8 +363,8 @@ def train(
         eval_env,
         best_model_save_path=CHECKPOINT_DIR,
         log_path=LOG_DIR,
-        eval_freq=max(20_000 // n_envs, 1),
-        n_eval_episodes=5,
+        eval_freq=max(100_000 // n_envs, 1),
+        n_eval_episodes=2,
         deterministic=True,
         render=False,
     )
