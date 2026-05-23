@@ -394,6 +394,7 @@ def train(
         callback=CallbackList(callbacks),
         reset_num_timesteps=not resume,
         tb_log_name="ppo_run",
+        progress_bar=True,
     )
 
     model.save(FINAL_MODEL)
