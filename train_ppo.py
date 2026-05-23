@@ -53,6 +53,7 @@ for d in (CHECKPOINT_DIR, LOG_DIR, DATASET_DIR):
 # ─── PPO Hyperparameters ──────────────────────────────────────────────────────
 PPO_KWARGS = dict(
     policy="CnnPolicy",
+    policy_kwargs=dict(normalize_images=False),  # we already normalize in NormalizeFrame
     learning_rate=2.5e-4,
     n_steps=512,
     batch_size=64,

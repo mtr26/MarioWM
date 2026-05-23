@@ -11,7 +11,7 @@ torchvision>=0.17.0
 # ─── Data & Visualisation ─────────────────────────────────────────────────────
 numpy>=1.26.0,<2.0  # nes-py 8.2.1 overflows with numpy 2.x uint8 arithmetic
 h5py>=3.11.0          # efficient offline dataset storage
-opencv-python>=4.9.0  # frame processing
+opencv-python-headless>=4.9.0  # frame processing
 matplotlib>=3.8.0
 imageio>=2.34.0       # gif / video export
 imageio[ffmpeg]
