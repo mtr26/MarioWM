@@ -4,9 +4,10 @@ Stacks preprocessing steps needed for both the PPO agent and the
 offline dataset collection:
   - Convert to grayscale (saves memory; color is not needed for gameplay)
   - Resize to 84×84 (standard DQN convention)
-  - Normalize pixels to [0, 1]
   - Skip n frames (repeat action for n steps, take max over last 2)
   - Stack k consecutive frames (gives the agent a sense of velocity)
+  - CustomReward: replaces the broken default reward with x_pos delta,
+    a strong death penalty (-50), and a level-completion bonus (+500).
 
 For the world model's decoder we also expose a function that wraps the
 env WITHOUT grayscaling so we can save RGB frames for reconstruction.
@@ -180,6 +181,71 @@ class NormalizeFrame(gym.ObservationWrapper):
         return obs.astype(np.float32) / 255.0
 
 
+class CustomReward(gym.Wrapper):
+    """
+    Replaces the default gym-super-mario-bros reward with a shaped signal
+    that actually incentivises completing the level:
+
+      +Δx_pos   : reward for moving right (dense progress signal)
+      -Δclock   : penalty for time passing (encourages speed)
+      -50        : heavy penalty for dying (discourages sprint-and-die)
+      +500       : bonus for reaching the flagpole (completes the level)
+
+    The default reward uses a -15 death penalty that is too small to deter
+    the sprint-and-die local optimum. We increase it to -50.
+    """
+
+    # Tunable constants — easy to adjust without touching the rest of the code
+    DEATH_PENALTY    = -50
+    FLAG_BONUS       = 500
+    PROGRESS_SCALE   = 1.0   # multiply x_pos delta (1.0 = raw pixels)
+    CLOCK_PENALTY    = 0.1   # penalty per clock tick lost
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self._last_x_pos = 0
+        self._last_life  = 2   # Mario starts with 3 lives (0-indexed)
+        self._last_time  = 400  # game clock starts at 400
+
+    # ------------------------------------------------------------------
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        # info may be empty on first reset for bridged envs — default safely
+        self._last_x_pos = info.get("x_pos", 0)
+        self._last_life  = info.get("life",  2)
+        self._last_time  = info.get("time",  400)
+        return obs, info
+
+    def step(self, action):
+        obs, _default_reward, terminated, truncated, info = self.env.step(action)
+
+        x_pos = info.get("x_pos", self._last_x_pos)
+        life  = info.get("life",  self._last_life)
+        time  = info.get("time",  self._last_time)
+
+        # ── Progress reward ───────────────────────────────────────────
+        reward = self.PROGRESS_SCALE * (x_pos - self._last_x_pos)
+
+        # ── Clock penalty (time ticks down → positive delta = penalty) ─
+        time_lost = self._last_time - time
+        if time_lost > 0:
+            reward -= self.CLOCK_PENALTY * time_lost
+
+        # ── Death penalty ─────────────────────────────────────────────
+        if life < self._last_life:
+            reward += self.DEATH_PENALTY
+
+        # ── Level-completion bonus ────────────────────────────────────
+        if info.get("flag_get", False):
+            reward += self.FLAG_BONUS
+
+        self._last_x_pos = x_pos
+        self._last_life  = life
+        self._last_time  = time
+
+        return obs, float(reward), terminated, truncated, info
+
+
 # ─── Wrapper Factories ────────────────────────────────────────────────────────
 
 def _base_env() -> gym.Env:
@@ -202,12 +268,13 @@ def _base_env() -> gym.Env:
 def make_ppo_env() -> gym.Env:
     """
     Build the fully preprocessed env for PPO training:
-      raw RGB → skip frames → grayscale → resize
+      raw RGB → skip frames → custom reward → grayscale → resize
     Observations are uint8 [0,255] — SB3 handles normalization internally.
     Returns a single (non-vectorized) gymnasium env.
     """
     env = _base_env()
     env = SkipFrame(env, skip=N_SKIP)
+    env = CustomReward(env)      # reshape reward before obs transforms
     env = GrayScaleFrame(env)
     env = ResizeFrame(env)
     return env
@@ -241,5 +308,6 @@ def make_collect_env() -> gym.Env:
     """
     env = _base_env()
     env = SkipFrame(env, skip=N_SKIP)
+    env = CustomReward(env)      # consistent reward shaping during collection
     env = ResizeFrame(env, height=RGB_HEIGHT, width=RGB_WIDTH)
     return env
