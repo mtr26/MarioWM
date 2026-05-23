@@ -38,6 +38,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 from env.wrappers import (
     make_collect_env, make_ppo_env,
     N_STACK, N_ACTIONS,
+    FRAME_HEIGHT, FRAME_WIDTH,
     RGB_HEIGHT, RGB_WIDTH,
 )
 
@@ -54,7 +55,7 @@ class FrameBuffer:
     even though we are storing RGB frames in the dataset.
     """
 
-    def __init__(self, n_stack: int = N_STACK, h: int = RGB_HEIGHT, w: int = RGB_WIDTH):
+    def __init__(self, n_stack: int = N_STACK, h: int = FRAME_HEIGHT, w: int = FRAME_WIDTH):
         self.n_stack = n_stack
         # buffer shape: (k, h, w, 1) — grayscale
         self.buf = np.zeros((n_stack, h, w, 1), dtype=np.uint8)

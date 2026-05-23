@@ -36,7 +36,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
 from env.wrappers import (
     make_vec_ppo_env, make_ppo_env, make_collect_env,
-    N_STACK, N_ACTIONS, RGB_HEIGHT, RGB_WIDTH,
+    N_STACK, N_ACTIONS, FRAME_HEIGHT, FRAME_WIDTH, RGB_HEIGHT, RGB_WIDTH,
 )
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ class FrameBuffer:
     def __init__(self):
         import cv2
         self._cv2 = cv2
-        self.buf = np.zeros((N_STACK, RGB_HEIGHT, RGB_WIDTH, 1), dtype=np.uint8)
+        self.buf = np.zeros((N_STACK, FRAME_HEIGHT, FRAME_WIDTH, 1), dtype=np.uint8)
 
     def reset(self, rgb_frame: np.ndarray) -> np.ndarray:
         gray = self._to_gray(rgb_frame)
