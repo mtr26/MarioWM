@@ -3,3 +3,5 @@ __pycache__/
 dataset/
 logs/
 checkpoints/
+.DS_Store
+eval.mp4

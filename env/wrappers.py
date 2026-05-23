@@ -44,8 +44,9 @@ N_STACK = 4          # frames to stack for the PPO agent
 N_SKIP = 4           # frames to skip (action repeat)
 
 # RGB output shape used by the *world model* dataset (no grayscale)
-RGB_HEIGHT = 84
-RGB_WIDTH = 84
+# Native NES resolution — gives the world model full visual detail.
+RGB_HEIGHT = 240
+RGB_WIDTH  = 256
 
 
 # ─── Old-gym → Gymnasium Bridge ───────────────────────────────────────────────
@@ -310,4 +311,21 @@ def make_collect_env() -> gym.Env:
     env = SkipFrame(env, skip=N_SKIP)
     env = CustomReward(env)      # consistent reward shaping during collection
     env = ResizeFrame(env, height=RGB_HEIGHT, width=RGB_WIDTH)
+    return env
+
+
+def make_video_env() -> gym.Env:
+    """
+    Build an env for video recording during evaluation.
+    - Full RGB colour (no grayscale)
+    - Native NES resolution (256×240) — no ResizeFrame
+    - Frame-skip applied so timing matches the agent's actions
+    - CustomReward applied so reward tracking stays consistent
+
+    Use this in evaluate_agent.py instead of make_collect_env() to get
+    a clean, high-resolution video of the agent playing.
+    """
+    env = _base_env()
+    env = SkipFrame(env, skip=N_SKIP)
+    env = CustomReward(env)
     return env
