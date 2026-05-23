@@ -53,7 +53,6 @@ for d in (CHECKPOINT_DIR, LOG_DIR, DATASET_DIR):
 # ─── PPO Hyperparameters ──────────────────────────────────────────────────────
 PPO_KWARGS = dict(
     policy="CnnPolicy",
-    policy_kwargs=dict(normalize_images=False),  # we already normalize in NormalizeFrame
     learning_rate=2.5e-4,
     n_steps=512,
     batch_size=64,
@@ -77,7 +76,7 @@ class FrameBuffer:
     def __init__(self):
         import cv2
         self._cv2 = cv2
-        self.buf = np.zeros((N_STACK, RGB_HEIGHT, RGB_WIDTH, 1), dtype=np.float32)
+        self.buf = np.zeros((N_STACK, RGB_HEIGHT, RGB_WIDTH, 1), dtype=np.uint8)
 
     def reset(self, rgb_frame: np.ndarray) -> np.ndarray:
         gray = self._to_gray(rgb_frame)
@@ -92,7 +91,7 @@ class FrameBuffer:
 
     def _to_gray(self, rgb: np.ndarray) -> np.ndarray:
         gray = self._cv2.cvtColor(rgb, self._cv2.COLOR_RGB2GRAY)
-        return (gray[:, :, np.newaxis] / 255.0).astype(np.float32)
+        return gray[:, :, np.newaxis]  # uint8, no normalization
 
     def _stacked(self) -> np.ndarray:
         # (H, W, N_STACK) — matches VecFrameStack channels_order="last"

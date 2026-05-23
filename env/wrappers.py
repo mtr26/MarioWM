@@ -202,14 +202,14 @@ def _base_env() -> gym.Env:
 def make_ppo_env() -> gym.Env:
     """
     Build the fully preprocessed env for PPO training:
-      raw RGB → skip frames → grayscale → resize → normalize
+      raw RGB → skip frames → grayscale → resize
+    Observations are uint8 [0,255] — SB3 handles normalization internally.
     Returns a single (non-vectorized) gymnasium env.
     """
     env = _base_env()
     env = SkipFrame(env, skip=N_SKIP)
     env = GrayScaleFrame(env)
     env = ResizeFrame(env)
-    env = NormalizeFrame(env)
     return env
 
 

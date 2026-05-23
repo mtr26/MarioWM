@@ -57,7 +57,7 @@ class FrameBuffer:
     def __init__(self, n_stack: int = N_STACK, h: int = RGB_HEIGHT, w: int = RGB_WIDTH):
         self.n_stack = n_stack
         # buffer shape: (k, h, w, 1) — grayscale
-        self.buf = np.zeros((n_stack, h, w, 1), dtype=np.float32)
+        self.buf = np.zeros((n_stack, h, w, 1), dtype=np.uint8)
 
     def reset(self, first_gray_frame: np.ndarray):
         """Fill all slots with the first frame (mimics VecFrameStack reset)."""
@@ -76,10 +76,10 @@ class FrameBuffer:
 
 
 def rgb_to_gray_norm(rgb: np.ndarray) -> np.ndarray:
-    """Convert uint8 RGB (H,W,3) → float32 grayscale (H,W,1) in [0,1]."""
+    """Convert uint8 RGB (H,W,3) → uint8 grayscale (H,W,1)."""
     import cv2
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    return (gray[:, :, np.newaxis] / 255.0).astype(np.float32)
+    return gray[:, :, np.newaxis]  # uint8, no normalization
 
 
 # ─── Main collection loop ─────────────────────────────────────────────────────
