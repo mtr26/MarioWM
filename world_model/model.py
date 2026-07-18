@@ -42,7 +42,12 @@ class ActionConditioner(nn.Module):
             raise ValueError(f"actions must have shape (B, {self.history})")
         if actions.shape[0] == 0:
             raise ValueError("action batch cannot be empty")
-        if int(actions.min()) < 0 or int(actions.max()) >= self.n_actions:
+        # Avoid scalar extraction inside torch.compile; nn.Embedding still checks
+        # indices on the compiled path, while eager mode provides a clearer error.
+        if (
+            not torch.compiler.is_compiling()
+            and (int(actions.min()) < 0 or int(actions.max()) >= self.n_actions)
+        ):
             raise ValueError(
                 f"action indices must be in [0, {self.n_actions - 1}]"
             )
