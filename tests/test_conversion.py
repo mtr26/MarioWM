@@ -122,6 +122,34 @@ def test_convert_dataset_refuses_nonempty_output(synthetic_h5, tmp_path):
     assert owned_file.read_text(encoding="utf-8") == "owned by user"
 
 
+def test_convert_dataset_can_limit_transitions_for_smoke_test(
+    synthetic_h5, tmp_path, capsys
+):
+    output = tmp_path / "limited-cache"
+
+    convert_dataset(
+        ConversionConfig(
+            input_path=synthetic_h5,
+            output_dir=output,
+            height=4,
+            width=6,
+            history=2,
+            break_indices=(6, 10),
+            workers=1,
+            limit_transitions=8,
+        )
+    )
+
+    actions = np.load(output / "actions.npy")
+    offsets = np.load(output / "episode_offsets.npy")
+    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert actions.shape == (8,)
+    np.testing.assert_array_equal(offsets, np.array([0, 4, 6, 8]))
+    assert metadata["limit_transitions"] == 8
+    assert metadata["ignored_break_indices"] == [10]
+    assert "Ignoring break indices outside converted prefix: [10]" in capsys.readouterr().out
+
+
 def test_validate_cache_checks_hashes_and_metadata(synthetic_h5, tmp_path):
     output = tmp_path / "cache"
     convert_dataset(

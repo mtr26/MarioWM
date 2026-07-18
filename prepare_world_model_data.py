@@ -30,6 +30,11 @@ def parse_args() -> argparse.Namespace:
         "--workers", type=int, default=min(16, os.cpu_count() or 1)
     )
     parser.add_argument(
+        "--limit-transitions",
+        type=int,
+        help="Convert only a source prefix for a local smoke test",
+    )
+    parser.add_argument(
         "--hf-repo", type=str, help="Optional Hugging Face dataset repo namespace/name"
     )
     parser.add_argument(
@@ -49,6 +54,7 @@ def main() -> None:
         break_indices=tuple(args.break_index),
         split_seed=args.split_seed,
         workers=args.workers,
+        limit_transitions=args.limit_transitions,
     )
     output = convert_dataset(config)
     print(f"Validated cache: {output}")

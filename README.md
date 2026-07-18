@@ -114,6 +114,16 @@ python prepare_world_model_data.py \
 The source file remains unchanged. The output is an approximately 11.6 GiB
 uncompressed cache designed to be copied to local SSD before training.
 
+Before the full conversion, validate the pipeline on a small prefix:
+
+```bash
+python prepare_world_model_data.py \
+  mario_1-1_live.h5 \
+  dataset/mario-1-1-smoke \
+  --limit-transitions 4096 \
+  --workers 8
+```
+
 ## Publish to Hugging Face Hub
 
 Use a write-scoped token through the environment or authenticate with

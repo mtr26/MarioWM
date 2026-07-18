@@ -56,6 +56,7 @@ class ConversionConfig:
     split_seed: int = 42
     split_fractions: tuple[float, float, float] = (0.9, 0.05, 0.05)
     workers: int = 16
+    limit_transitions: int | None = None
 
 
 def validate_source(handle: h5py.File) -> SourceSchema:
@@ -169,6 +170,11 @@ def _validate_conversion_config(config: ConversionConfig) -> None:
         raise ValueError("history must be positive")
     if config.workers < 1:
         raise ValueError("workers must be positive")
+    if (
+        config.limit_transitions is not None
+        and config.limit_transitions < config.history
+    ):
+        raise ValueError("transition limit must be at least the history length")
 
 
 def _resize_frame(frame: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -227,19 +233,39 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
     cv2.setNumThreads(1)
     input_path = Path(config.input_path)
     with h5py.File(input_path, "r") as handle:
-        schema = validate_source(handle)
-        if schema.n_actions > 256:
+        source_schema = validate_source(handle)
+        if source_schema.n_actions > 256:
             raise SourceValidationError("at most 256 discrete actions are supported")
+        n_transitions = (
+            source_schema.n_transitions
+            if config.limit_transitions is None
+            else int(config.limit_transitions)
+        )
+        if n_transitions > source_schema.n_transitions:
+            raise ValueError(
+                "transition limit cannot exceed the source transition count"
+            )
+        active_breaks = tuple(
+            sorted(index for index in config.break_indices if index < n_transitions)
+        )
+        ignored_breaks = tuple(
+            sorted(index for index in config.break_indices if index >= n_transitions)
+        )
+        if ignored_breaks:
+            print(
+                "Ignoring break indices outside converted prefix: "
+                f"{list(ignored_breaks)}"
+            )
 
-        actions = handle["actions"][:].astype(np.uint8)
-        rewards = handle["rewards"][:].astype(np.float32)
-        dones = handle["dones"][:].astype(bool)
-        offsets = build_episode_offsets(dones, config.break_indices)
+        actions = handle["actions"][:n_transitions].astype(np.uint8)
+        rewards = handle["rewards"][:n_transitions].astype(np.float32)
+        dones = handle["dones"][:n_transitions].astype(bool)
+        offsets = build_episode_offsets(dones, active_breaks)
         n_trajectories = len(offsets) - 1
         splits = assign_episode_splits(
             n_trajectories, config.split_seed, config.split_fractions
         )
-        frame_count = schema.n_transitions + n_trajectories
+        frame_count = n_transitions + n_trajectories
 
         frames_out = np.lib.format.open_memmap(
             temporary_dir / "frames.npy",
@@ -253,15 +279,15 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
         np.save(temporary_dir / "episode_splits.npy", splits)
         np.save(
             temporary_dir / "source_transition_indices.npy",
-            np.arange(schema.n_transitions, dtype=np.int64),
+            np.arange(n_transitions, dtype=np.int64),
         )
 
         observations = handle["observations"]
         next_observations = handle["next_obs"]
         source_chunk = int(observations.chunks[0]) if observations.chunks else 1024
 
-        for block_start in range(0, schema.n_transitions, source_chunk):
-            block_end = min(block_start + source_chunk, schema.n_transitions)
+        for block_start in range(0, n_transitions, source_chunk):
+            block_end = min(block_start + source_chunk, n_transitions)
             resized_observations = _resize_batch(
                 observations[block_start:block_end],
                 config.height,
@@ -311,16 +337,19 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_name": input_path.name,
         "source_size_bytes": input_path.stat().st_size,
-        "source_frame_shape": list(schema.frame_shape),
-        "n_transitions": schema.n_transitions,
+        "source_frame_shape": list(source_schema.frame_shape),
+        "source_n_transitions": source_schema.n_transitions,
+        "n_transitions": n_transitions,
         "n_trajectories": n_trajectories,
         "n_frames": frame_count,
         "frame_shape": [config.height, config.width, 3],
         "history": config.history,
         "frame_skip": 4,
-        "n_actions": schema.n_actions,
-        "action_names": list(ACTION_NAMES[: schema.n_actions]),
-        "break_indices": sorted(int(index) for index in config.break_indices),
+        "n_actions": source_schema.n_actions,
+        "action_names": list(ACTION_NAMES[: source_schema.n_actions]),
+        "break_indices": list(active_breaks),
+        "ignored_break_indices": list(ignored_breaks),
+        "limit_transitions": config.limit_transitions,
         "split_seed": config.split_seed,
         "split_fractions": list(config.split_fractions),
         "resize": "opencv.INTER_AREA",
@@ -424,6 +453,7 @@ def convert_dataset(config: ConversionConfig) -> Path:
         split_seed=config.split_seed,
         split_fractions=config.split_fractions,
         workers=config.workers,
+        limit_transitions=config.limit_transitions,
     )
     _write_cache(resolved_config, temporary)
     validate_cache(temporary)
