@@ -1,9 +1,12 @@
 import json
+import subprocess
+import sys
 
 import h5py
 import numpy as np
 import pytest
 
+from inspect_dataset import inspect
 from world_model.conversion import (
     CacheValidationError,
     ConversionConfig,
@@ -168,3 +171,43 @@ def test_validate_cache_detects_tampered_array(synthetic_h5, tmp_path):
 
     with pytest.raises(CacheValidationError, match="SHA-256 mismatch"):
         validate_cache(output)
+
+
+def test_inspector_stats_only_reports_boundaries_without_writing_images(
+    synthetic_h5,
+):
+    stats = inspect(
+        str(synthetic_h5),
+        n_preview=4,
+        traj_len=2,
+        stats_only=True,
+        break_indices=(6,),
+    )
+
+    assert stats["n_transitions"] == 12
+    assert stats["n_trajectories"] == 4
+    assert stats["trailing_partial_length"] == 2
+    assert stats["datasets"]["observations"]["chunks"] == [4, 8, 10, 3]
+    assert stats["explicit_breaks"][0]["index"] == 6
+    assert stats["explicit_breaks"][0]["continuous"] is False
+    assert not (synthetic_h5.parent / "preview.png").exists()
+    assert not (synthetic_h5.parent / "sample_trajectory.gif").exists()
+
+
+def test_inspector_does_not_import_visual_stack_for_stats_only_usage():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import inspect_dataset; "
+                "assert 'matplotlib.pyplot' not in sys.modules; "
+                "assert 'imageio.v3' not in sys.modules"
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr

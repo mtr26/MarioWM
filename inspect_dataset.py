@@ -1,106 +1,240 @@
-"""
-Dataset visualization & integrity checks.
+"""Inspect Mario HDF5 structure, alignment, boundaries, and visual samples."""
 
-Usage:
-    python inspect_dataset.py dataset/mario_1-1_100k_eps20.h5
+from __future__ import annotations
 
-Outputs:
-  - Dataset stats (action distribution, reward histogram, done count)
-  - A mosaic of random frames saved to dataset/preview.png
-  - A short GIF of a sampled trajectory saved to dataset/sample_trajectory.gif
-"""
-
-import os
-import sys
 import argparse
+import math
+import time
+from pathlib import Path
+from typing import Sequence
 
-import numpy as np
 import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import imageio.v3 as iio
+import numpy as np
+
+from world_model.conversion import ACTION_NAMES, build_episode_offsets
 
 
-def inspect(h5_path: str, n_preview: int = 16, traj_len: int = 64):
-    print(f"\nInspecting: {h5_path}")
+def _dataset_info(dataset: h5py.Dataset) -> dict:
+    return {
+        "shape": list(dataset.shape),
+        "dtype": str(dataset.dtype),
+        "chunks": None if dataset.chunks is None else list(dataset.chunks),
+        "compression": dataset.compression,
+        "storage_bytes": int(dataset.id.get_storage_size()),
+    }
 
-    with h5py.File(h5_path, "r") as f:
-        # ── Metadata ──────────────────────────────────────────────────────────
-        print("\n── Metadata ──────────────────────────────────────────────")
-        for k, v in f.attrs.items():
-            print(f"  {k:20s}: {v}")
 
-        obs      = f["observations"]    # (N, H, W, 3)
-        next_obs = f["next_obs"]
-        actions  = f["actions"][:]      # load to RAM for stats
-        rewards  = f["rewards"][:]
-        dones    = f["dones"][:]
+def _length_summary(lengths: np.ndarray) -> dict[str, float | int]:
+    if lengths.size == 0:
+        return {"min": 0, "median": 0.0, "mean": 0.0, "p95": 0.0, "max": 0}
+    return {
+        "min": int(lengths.min()),
+        "median": float(np.median(lengths)),
+        "mean": float(lengths.mean()),
+        "p95": float(np.quantile(lengths, 0.95)),
+        "max": int(lengths.max()),
+    }
 
-        N = obs.shape[0]
-        print(f"\n── Shape / dtype ─────────────────────────────────────────")
-        print(f"  observations : {obs.shape}  {obs.dtype}")
-        print(f"  next_obs     : {next_obs.shape}  {next_obs.dtype}")
-        print(f"  actions      : {actions.shape}  {actions.dtype}")
-        print(f"  rewards      : {rewards.shape}  {rewards.dtype}")
-        print(f"  dones        : {dones.shape}  {dones.dtype}")
 
-        print(f"\n── Statistics ────────────────────────────────────────────")
-        print(f"  Total steps  : {N:,}")
-        print(f"  Episodes     : {dones.sum():,}")
-        print(f"  Avg ep len   : {N / max(dones.sum(), 1):.1f} steps")
-        print(f"  Reward range : [{rewards.min():.1f}, {rewards.max():.1f}]")
-        print(f"  Mean reward  : {rewards.mean():.2f}")
+def _print_stats(stats: dict) -> None:
+    print("\n── Metadata ──────────────────────────────────────────────")
+    for key, value in stats["attributes"].items():
+        print(f"  {key:24s}: {value}")
 
-        print(f"\n── Action distribution ───────────────────────────────────")
-        from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-        for a_idx, count in enumerate(np.bincount(actions, minlength=len(SIMPLE_MOVEMENT))):
-            bar = "█" * (count * 40 // N)
-            label = str(SIMPLE_MOVEMENT[a_idx])
-            print(f"  [{a_idx}] {label:25s} {count:>7,} ({count/N*100:5.1f}%)  {bar}")
+    print("\n── Shape / storage ───────────────────────────────────────")
+    for name, values in stats["datasets"].items():
+        print(
+            f"  {name:18s}: {tuple(values['shape'])} {values['dtype']} "
+            f"chunks={values['chunks']} compression={values['compression']} "
+            f"stored={values['storage_bytes'] / 2**20:.1f} MiB"
+        )
 
-        # ── Preview mosaic ─────────────────────────────────────────────────
-        print(f"\n── Generating frame mosaic ({n_preview} frames) …")
-        idxs = np.random.default_rng(0).choice(N, size=n_preview, replace=False)
-        cols = 8
-        rows = max(1, n_preview // cols)
+    lengths = stats["trajectory_length_summary"]
+    print("\n── Trajectories ──────────────────────────────────────────")
+    print(f"  Transitions             : {stats['n_transitions']:,}")
+    print(f"  Complete episodes       : {stats['complete_episodes']:,}")
+    print(f"  Trajectory segments     : {stats['n_trajectories']:,}")
+    print(f"  Trailing partial length : {stats['trailing_partial_length']:,}")
+    print(
+        "  Length min/median/mean/p95/max: "
+        f"{lengths['min']}/{lengths['median']:.1f}/{lengths['mean']:.1f}/"
+        f"{lengths['p95']:.1f}/{lengths['max']}"
+    )
 
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * 1.5, rows * 1.5))
-        axes = np.array(axes).flatten()
+    print("\n── Actions ───────────────────────────────────────────────")
+    for item in stats["actions"]:
+        print(
+            f"  [{item['index']}] {item['name']:18s} "
+            f"{item['count']:>8,} ({item['percent']:5.1f}%)"
+        )
 
-        for i, idx in enumerate(idxs):
-            frame = obs[idx]   # uint8 RGB
-            axes[i].imshow(frame)
-            axes[i].axis("off")
-            axes[i].set_title(f"a={actions[idx]}", fontsize=6)
+    print("\n── I/O / continuity ──────────────────────────────────────")
+    print(f"  Sequential read         : {stats['sequential_read_mib_s']:.1f} MiB/s")
+    for item in stats["explicit_breaks"]:
+        print(
+            f"  New trajectory at {item['index']:,}: "
+            f"previous next == current obs: {item['continuous']}"
+        )
 
-        plt.suptitle("Random frames from dataset", fontsize=10, y=1.01)
-        plt.tight_layout()
 
-        preview_path = os.path.join(os.path.dirname(h5_path), "preview.png")
-        plt.savefig(preview_path, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"  Saved → {preview_path}")
+def inspect(
+    h5_path: str,
+    n_preview: int = 16,
+    traj_len: int = 64,
+    *,
+    stats_only: bool = False,
+    break_indices: Sequence[int] = (),
+) -> dict:
+    """Return dataset statistics and optionally create boundary-safe visuals."""
+    source_path = Path(h5_path)
+    print(f"\nInspecting: {source_path}")
 
-        # ── Sample trajectory GIF ──────────────────────────────────────────
-        print(f"\n── Generating trajectory GIF ({traj_len} steps) …")
-        start = np.random.default_rng(1).integers(0, N - traj_len)
-        frames_gif = [obs[i] for i in range(start, start + traj_len)]
+    with h5py.File(source_path, "r") as handle:
+        required = ("observations", "next_obs", "actions", "rewards", "dones")
+        missing = [name for name in required if name not in handle]
+        if missing:
+            raise ValueError(f"missing required datasets: {', '.join(missing)}")
 
-        gif_path = os.path.join(os.path.dirname(h5_path), "sample_trajectory.gif")
-        iio.imwrite(gif_path, frames_gif, fps=10, loop=0)
-        print(f"  Saved → {gif_path}")
+        observations = handle["observations"]
+        next_observations = handle["next_obs"]
+        actions = handle["actions"][:]
+        rewards = handle["rewards"][:]
+        dones = handle["dones"][:].astype(bool)
+        n_transitions = int(observations.shape[0])
+        offsets = build_episode_offsets(dones, break_indices)
+        trajectory_lengths = np.diff(offsets)
+        done_indices = np.flatnonzero(dones)
+        trailing_partial = (
+            0
+            if dones[-1]
+            else n_transitions - (int(done_indices[-1]) + 1 if done_indices.size else 0)
+        )
 
-    print("\n✓ Inspection complete.\n")
+        unique_actions, action_counts = np.unique(actions, return_counts=True)
+        action_items = []
+        for index, count in zip(unique_actions, action_counts):
+            action_index = int(index)
+            action_items.append(
+                {
+                    "index": action_index,
+                    "name": (
+                        ACTION_NAMES[action_index]
+                        if action_index < len(ACTION_NAMES)
+                        else f"action-{action_index}"
+                    ),
+                    "count": int(count),
+                    "percent": float(count * 100 / n_transitions),
+                }
+            )
+
+        explicit_breaks = []
+        for index in sorted(set(int(value) for value in break_indices)):
+            if index <= 0 or index >= n_transitions:
+                raise ValueError(f"break index out of range: {index}")
+            explicit_breaks.append(
+                {
+                    "index": index,
+                    "continuous": bool(
+                        np.array_equal(
+                            next_observations[index - 1], observations[index]
+                        )
+                    ),
+                }
+            )
+
+        chunk_frames = (
+            int(observations.chunks[0]) if observations.chunks else min(1024, n_transitions)
+        )
+        read_count = min(chunk_frames, n_transitions)
+        started = time.perf_counter()
+        benchmark = observations[:read_count]
+        elapsed = max(time.perf_counter() - started, 1e-9)
+        sequential_read_mib_s = float(benchmark.nbytes / 2**20 / elapsed)
+        del benchmark
+
+        stats = {
+            "attributes": {
+                key: value.item() if hasattr(value, "item") else value
+                for key, value in handle.attrs.items()
+            },
+            "datasets": {name: _dataset_info(handle[name]) for name in required},
+            "n_transitions": n_transitions,
+            "complete_episodes": int(dones.sum()),
+            "n_trajectories": len(offsets) - 1,
+            "trailing_partial_length": trailing_partial,
+            "trajectory_length_summary": _length_summary(trajectory_lengths),
+            "reward_min": float(rewards.min()),
+            "reward_mean": float(rewards.mean()),
+            "reward_max": float(rewards.max()),
+            "actions": action_items,
+            "explicit_breaks": explicit_breaks,
+            "sequential_read_mib_s": sequential_read_mib_s,
+        }
+        _print_stats(stats)
+
+        if stats_only:
+            return stats
+
+        import imageio.v3 as iio
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        if n_preview < 1 or traj_len < 1:
+            raise ValueError("preview count and trajectory length must be positive")
+
+        preview_count = min(n_preview, n_transitions)
+        preview_indices = np.random.default_rng(0).choice(
+            n_transitions, size=preview_count, replace=False
+        )
+        columns = min(8, preview_count)
+        rows = math.ceil(preview_count / columns)
+        figure, axes = plt.subplots(
+            rows, columns, figsize=(columns * 1.7, rows * 1.7), squeeze=False
+        )
+        flat_axes = axes.flatten()
+        for axis, index in zip(flat_axes, preview_indices):
+            axis.imshow(observations[index])
+            axis.axis("off")
+            axis.set_title(f"t={index}, a={int(actions[index])}", fontsize=6)
+        for axis in flat_axes[preview_count:]:
+            axis.axis("off")
+        figure.suptitle("Random aligned observation/action samples", fontsize=10)
+        figure.tight_layout()
+        preview_path = source_path.parent / "preview.png"
+        figure.savefig(preview_path, dpi=150, bbox_inches="tight")
+        plt.close(figure)
+        print(f"\nSaved frame mosaic: {preview_path}")
+
+        candidates = np.flatnonzero(trajectory_lengths >= traj_len)
+        if candidates.size:
+            episode = int(np.random.default_rng(1).choice(candidates))
+            start_min = int(offsets[episode])
+            start_max = int(offsets[episode + 1]) - traj_len
+            start = int(np.random.default_rng(2).integers(start_min, start_max + 1))
+            trajectory_frames = observations[start : start + traj_len]
+            gif_path = source_path.parent / "sample_trajectory.gif"
+            iio.imwrite(gif_path, trajectory_frames, fps=10, loop=0)
+            print(f"Saved trajectory GIF: {gif_path}")
+        else:
+            print(f"No trajectory is long enough for a {traj_len}-frame GIF")
+
+    return stats
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inspect a collected Mario dataset")
-    parser.add_argument("h5_path", type=str, help="Path to the HDF5 dataset file")
-    parser.add_argument("--n-preview", type=int, default=16,
-                        help="Number of random frames in mosaic (default: 16)")
-    parser.add_argument("--traj-len", type=int, default=64,
-                        help="Length of the sampled trajectory GIF (default: 64)")
-    args = parser.parse_args()
-    inspect(args.h5_path, n_preview=args.n_preview, traj_len=args.traj_len)
+    parser.add_argument("h5_path", type=str)
+    parser.add_argument("--n-preview", type=int, default=16)
+    parser.add_argument("--traj-len", type=int, default=64)
+    parser.add_argument("--stats-only", action="store_true")
+    parser.add_argument("--break-index", action="append", type=int, default=[])
+    arguments = parser.parse_args()
+    inspect(
+        arguments.h5_path,
+        n_preview=arguments.n_preview,
+        traj_len=arguments.traj_len,
+        stats_only=arguments.stats_only,
+        break_indices=tuple(arguments.break_index),
+    )
