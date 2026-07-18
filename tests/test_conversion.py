@@ -104,6 +104,28 @@ def test_convert_dataset_writes_unique_trajectory_frames(synthetic_h5, tmp_path)
     assert int(frames[8, 0, 0, 0]) == 90
 
 
+def test_convert_dataset_rejects_unmarked_temporal_discontinuity(
+    synthetic_h5, tmp_path
+):
+    with h5py.File(synthetic_h5, "a") as handle:
+        handle["next_obs"][7] = np.full(
+            handle["next_obs"].shape[1:], 77, dtype=np.uint8
+        )
+
+    with pytest.raises(SourceValidationError, match="--break-index 8"):
+        convert_dataset(
+            ConversionConfig(
+                input_path=synthetic_h5,
+                output_dir=tmp_path / "cache",
+                height=4,
+                width=6,
+                history=2,
+                break_indices=(6,),
+                workers=1,
+            )
+        )
+
+
 def test_convert_dataset_refuses_nonempty_output(synthetic_h5, tmp_path):
     output = tmp_path / "cache"
     output.mkdir()

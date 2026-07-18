@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
 from pathlib import Path
@@ -40,6 +41,7 @@ def save_checkpoint(
     epoch: int,
     global_step: int,
     config: dict,
+    best_validation_l1: float = math.inf,
 ) -> None:
     checkpoint_path = Path(path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,7 @@ def save_checkpoint(
             "scheduler": None if scheduler is None else scheduler.state_dict(),
             "epoch": int(epoch),
             "global_step": int(global_step),
+            "best_validation_l1": float(best_validation_l1),
             "config": config,
             "rng": capture_rng_state(),
         },

@@ -178,12 +178,13 @@ def run_training_loop(
     device: torch.device,
     start_epoch: int,
     global_step: int,
+    best_validation_l1: float,
 ) -> None:
     output_dir = Path(config.runtime.output_dir)
     preview_dir = output_dir / "previews"
     output_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
-    best_l1 = math.inf
+    best_l1 = best_validation_l1
 
     try:
         for epoch in range(start_epoch, config.runtime.epochs):
@@ -246,6 +247,12 @@ def run_training_loop(
                             f"validation/action_{action}_l1", value, global_step
                         )
 
+            improved = bool(
+                validation_metrics and validation_metrics["l1"] < best_l1
+            )
+            if improved:
+                best_l1 = validation_metrics["l1"]
+
             save_checkpoint(
                 output_dir / "latest.pt",
                 model=raw_model,
@@ -255,9 +262,9 @@ def run_training_loop(
                 epoch=epoch,
                 global_step=global_step,
                 config=config.to_dict(),
+                best_validation_l1=best_l1,
             )
-            if validation_metrics and validation_metrics["l1"] < best_l1:
-                best_l1 = validation_metrics["l1"]
+            if improved:
                 save_checkpoint(
                     output_dir / "best.pt",
                     model=raw_model,
@@ -267,6 +274,7 @@ def run_training_loop(
                     epoch=epoch,
                     global_step=global_step,
                     config=config.to_dict(),
+                    best_validation_l1=best_l1,
                 )
             message = (
                 f"epoch={epoch} step={global_step} train_l1={train_metrics['l1']:.6f}"
@@ -329,6 +337,7 @@ def main() -> None:
     ema = EMA(raw_model, config.runtime.ema_decay)
     start_epoch = 0
     global_step = 0
+    best_validation_l1 = math.inf
     if args.resume:
         state = load_checkpoint(
             args.resume,
@@ -340,6 +349,7 @@ def main() -> None:
         ema.load_state_dict(state["ema"])
         start_epoch = int(state["epoch"]) + 1
         global_step = int(state["global_step"])
+        best_validation_l1 = float(state.get("best_validation_l1", math.inf))
 
     should_compile = config.runtime.compile and not args.no_compile
     train_model = torch.compile(raw_model) if should_compile else raw_model
@@ -356,6 +366,7 @@ def main() -> None:
         device=device,
         start_epoch=start_epoch,
         global_step=global_step,
+        best_validation_l1=best_validation_l1,
     )
 
 

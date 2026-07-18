@@ -285,11 +285,53 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
         observations = handle["observations"]
         next_observations = handle["next_obs"]
         source_chunk = int(observations.chunks[0]) if observations.chunks else 1024
+        trajectory_ends = set((offsets[1:] - 1).tolist())
+        pending_next_frame: np.ndarray | None = None
+        pending_transition: int | None = None
 
         for block_start in range(0, n_transitions, source_chunk):
             block_end = min(block_start + source_chunk, n_transitions)
+            observation_block = observations[block_start:block_end]
+            next_observation_block = next_observations[block_start:block_end]
+
+            if pending_next_frame is not None and not np.array_equal(
+                pending_next_frame, observation_block[0]
+            ):
+                assert pending_transition is not None
+                raise SourceValidationError(
+                    f"next_obs[{pending_transition}] does not match "
+                    f"observations[{pending_transition + 1}]; if the collector "
+                    "restarted there, pass "
+                    f"--break-index {pending_transition + 1}"
+                )
+            for relative_index in range(len(observation_block) - 1):
+                transition_index = block_start + relative_index
+                if transition_index in trajectory_ends:
+                    continue
+                if not np.array_equal(
+                    next_observation_block[relative_index],
+                    observation_block[relative_index + 1],
+                ):
+                    raise SourceValidationError(
+                        f"next_obs[{transition_index}] does not match "
+                        f"observations[{transition_index + 1}]; if the collector "
+                        "restarted there, pass "
+                        f"--break-index {transition_index + 1}"
+                    )
+
+            last_transition = block_end - 1
+            if (
+                last_transition < n_transitions - 1
+                and last_transition not in trajectory_ends
+            ):
+                pending_next_frame = next_observation_block[-1].copy()
+                pending_transition = last_transition
+            else:
+                pending_next_frame = None
+                pending_transition = None
+
             resized_observations = _resize_batch(
-                observations[block_start:block_end],
+                observation_block,
                 config.height,
                 config.width,
                 config.workers,
@@ -317,7 +359,7 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
             if terminal_episodes.size:
                 terminal_indices = offsets[terminal_episodes + 1] - 1
                 terminal_frames = _resize_batch(
-                    next_observations[terminal_indices.tolist()],
+                    next_observation_block[terminal_indices - block_start],
                     config.height,
                     config.width,
                     config.workers,

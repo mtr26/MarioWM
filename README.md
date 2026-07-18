@@ -112,7 +112,10 @@ python prepare_world_model_data.py \
 ```
 
 The source file remains unchanged. The output is an approximately 11.6 GiB
-uncompressed cache designed to be copied to local SSD before training.
+uncompressed cache designed to be copied to local SSD before training. During
+conversion, every non-terminal `next_obs[t]` is checked against
+`observations[t+1]`; an unmarked collector restart stops conversion and reports
+the exact additional `--break-index` to supply.
 
 Before the full conversion, validate the pipeline on a small prefix:
 
@@ -175,7 +178,8 @@ The default configuration uses BF16 autocast, TF32, channels-last tensors,
 `torch.compile`, fused AdamW when supported, gradient clipping, EMA validation,
 warmup followed by cosine decay, and batch size 64.
 
-Resume model, optimizer, scheduler, EMA, epoch, step, and RNG state exactly:
+Resume model, optimizer, scheduler, EMA, best validation score, epoch, step,
+and RNG state exactly:
 
 ```bash
 python train_world_model.py \
