@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import cv2
 import h5py
@@ -431,3 +431,35 @@ def convert_dataset(config: ConversionConfig) -> Path:
         output.rmdir()
     os.replace(temporary, output)
     return output
+
+
+def publish_cache(
+    output_dir: str | Path,
+    repo_id: str,
+    private: bool,
+    api: Any = None,
+) -> str:
+    """Validate and upload a cache to a Hugging Face dataset repository."""
+    parts = repo_id.split("/")
+    if len(parts) != 2 or any(not part.strip() for part in parts):
+        raise ValueError("Hugging Face repo id must use namespace/name")
+
+    cache_path = Path(output_dir).resolve()
+    validate_cache(cache_path)
+    if api is None:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+
+    repo_url = api.create_repo(
+        repo_id=repo_id,
+        repo_type="dataset",
+        private=private,
+        exist_ok=True,
+    )
+    result = api.upload_folder(
+        folder_path=str(cache_path),
+        repo_id=repo_id,
+        repo_type="dataset",
+    )
+    return str(getattr(result, "repo_url", repo_url))
