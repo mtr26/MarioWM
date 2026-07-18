@@ -1,11 +1,17 @@
+import json
+
 import h5py
 import numpy as np
 import pytest
 
 from world_model.conversion import (
+    CacheValidationError,
+    ConversionConfig,
     SourceValidationError,
     assign_episode_splits,
     build_episode_offsets,
+    convert_dataset,
+    validate_cache,
     validate_source,
 )
 
@@ -61,3 +67,104 @@ def test_validate_source_rejects_wrong_transition_dtype(synthetic_h5):
     with h5py.File(synthetic_h5, "r") as handle:
         with pytest.raises(SourceValidationError, match="integer dtype"):
             validate_source(handle)
+
+
+def test_convert_dataset_writes_unique_trajectory_frames(synthetic_h5, tmp_path):
+    output = tmp_path / "cache"
+
+    result = convert_dataset(
+        ConversionConfig(
+            input_path=synthetic_h5,
+            output_dir=output,
+            height=4,
+            width=6,
+            history=2,
+            break_indices=(6,),
+            workers=2,
+        )
+    )
+
+    assert result == output.resolve()
+    frames = np.load(output / "frames.npy", mmap_mode="r")
+    actions = np.load(output / "actions.npy", mmap_mode="r")
+    offsets = np.load(output / "episode_offsets.npy")
+    splits = np.load(output / "episode_splits.npy")
+    np.testing.assert_array_equal(
+        offsets, np.array([0, 4, 6, 10, 12], dtype=np.int64)
+    )
+    assert frames.shape == (16, 4, 6, 3)
+    assert actions.shape == (12,)
+    assert splits.shape == (4,)
+    assert int(frames[0, 0, 0, 0]) == 0
+    assert int(frames[4, 0, 0, 0]) == 4
+    assert int(frames[7, 0, 0, 0]) == 89
+    assert int(frames[8, 0, 0, 0]) == 90
+
+
+def test_convert_dataset_refuses_nonempty_output(synthetic_h5, tmp_path):
+    output = tmp_path / "cache"
+    output.mkdir()
+    owned_file = output / "keep.txt"
+    owned_file.write_text("owned by user", encoding="utf-8")
+    config = ConversionConfig(
+        input_path=synthetic_h5,
+        output_dir=output,
+        height=4,
+        width=6,
+    )
+
+    with pytest.raises(FileExistsError, match="non-empty"):
+        convert_dataset(config)
+
+    assert owned_file.read_text(encoding="utf-8") == "owned by user"
+
+
+def test_validate_cache_checks_hashes_and_metadata(synthetic_h5, tmp_path):
+    output = tmp_path / "cache"
+    convert_dataset(
+        ConversionConfig(
+            input_path=synthetic_h5,
+            output_dir=output,
+            height=4,
+            width=6,
+            history=2,
+            break_indices=(6,),
+            workers=1,
+        )
+    )
+
+    metadata = validate_cache(output)
+
+    assert metadata["n_transitions"] == 12
+    assert metadata["n_trajectories"] == 4
+    assert metadata["frame_shape"] == [4, 6, 3]
+    assert set(metadata["sha256"]) == {
+        "actions.npy",
+        "episode_offsets.npy",
+        "episode_splits.npy",
+        "frames.npy",
+        "rewards.npy",
+        "source_transition_indices.npy",
+    }
+    card = (output / "README.md").read_text(encoding="utf-8")
+    assert "action at transition t produces frame t+1" in card
+
+
+def test_validate_cache_detects_tampered_array(synthetic_h5, tmp_path):
+    output = tmp_path / "cache"
+    convert_dataset(
+        ConversionConfig(
+            input_path=synthetic_h5,
+            output_dir=output,
+            height=4,
+            width=6,
+            break_indices=(6,),
+            workers=1,
+        )
+    )
+    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    metadata["sha256"]["actions.npy"] = "0" * 64
+    (output / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(CacheValidationError, match="SHA-256 mismatch"):
+        validate_cache(output)

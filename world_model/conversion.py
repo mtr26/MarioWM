@@ -2,19 +2,40 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import platform
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+import cv2
 import h5py
 import numpy as np
 
 
 REQUIRED_DATASETS = ("observations", "next_obs", "actions", "rewards", "dones")
+ACTION_NAMES = ("NOOP", "right", "right+A", "right+B", "right+A+B", "A", "left")
+ARRAY_FILES = (
+    "frames.npy",
+    "actions.npy",
+    "rewards.npy",
+    "episode_offsets.npy",
+    "episode_splits.npy",
+    "source_transition_indices.npy",
+)
 
 
 class SourceValidationError(ValueError):
     """Raised when the input HDF5 file cannot be converted safely."""
+
+
+class CacheValidationError(ValueError):
+    """Raised when generated cache artifacts disagree with their metadata."""
 
 
 @dataclass(frozen=True)
@@ -139,3 +160,274 @@ def assign_episode_splits(
 
     labels = np.repeat(np.arange(3, dtype=np.uint8), counts)
     return np.random.default_rng(seed).permutation(labels)
+
+
+def _validate_conversion_config(config: ConversionConfig) -> None:
+    if config.height < 1 or config.width < 1:
+        raise ValueError("output height and width must be positive")
+    if config.history < 1:
+        raise ValueError("history must be positive")
+    if config.workers < 1:
+        raise ValueError("workers must be positive")
+
+
+def _resize_frame(frame: np.ndarray, height: int, width: int) -> np.ndarray:
+    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+
+def _resize_batch(
+    frames: np.ndarray, height: int, width: int, workers: int
+) -> np.ndarray:
+    if len(frames) == 0:
+        return np.empty((0, height, width, 3), dtype=np.uint8)
+    if workers == 1:
+        resized = [_resize_frame(frame, height, width) for frame in frames]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            resized = list(
+                pool.map(
+                    lambda frame: _resize_frame(frame, height, width),
+                    frames,
+                )
+            )
+    return np.stack(resized).astype(np.uint8, copy=False)
+
+
+def _sha256(path: Path, block_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(block_size):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _dataset_card(metadata: dict) -> str:
+    return (
+        "---\n"
+        "license: other\n"
+        "task_categories:\n"
+        "- video-prediction\n"
+        "---\n\n"
+        "# Mario 1-1 action-conditioned transitions\n\n"
+        "This repository contains a NumPy memory-mapped cache derived from "
+        "recorded Super Mario Bros. World 1-1 trajectories. The action at "
+        "transition t produces frame t+1. Download the repository to local "
+        "SSD before training.\n\n"
+        f"- Transitions: {metadata['n_transitions']}\n"
+        f"- Trajectories: {metadata['n_trajectories']}\n"
+        f"- Frame shape: {metadata['frame_shape']}\n"
+        f"- History: {metadata['history']}\n"
+        f"- Explicit breaks: {metadata['break_indices']}\n\n"
+        "The cache is not an official Nintendo dataset and contains gameplay "
+        "imagery whose use remains subject to applicable rights and local law.\n"
+    )
+
+
+def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
+    cv2.setNumThreads(1)
+    input_path = Path(config.input_path)
+    with h5py.File(input_path, "r") as handle:
+        schema = validate_source(handle)
+        if schema.n_actions > 256:
+            raise SourceValidationError("at most 256 discrete actions are supported")
+
+        actions = handle["actions"][:].astype(np.uint8)
+        rewards = handle["rewards"][:].astype(np.float32)
+        dones = handle["dones"][:].astype(bool)
+        offsets = build_episode_offsets(dones, config.break_indices)
+        n_trajectories = len(offsets) - 1
+        splits = assign_episode_splits(
+            n_trajectories, config.split_seed, config.split_fractions
+        )
+        frame_count = schema.n_transitions + n_trajectories
+
+        frames_out = np.lib.format.open_memmap(
+            temporary_dir / "frames.npy",
+            mode="w+",
+            dtype=np.uint8,
+            shape=(frame_count, config.height, config.width, 3),
+        )
+        np.save(temporary_dir / "actions.npy", actions)
+        np.save(temporary_dir / "rewards.npy", rewards)
+        np.save(temporary_dir / "episode_offsets.npy", offsets)
+        np.save(temporary_dir / "episode_splits.npy", splits)
+        np.save(
+            temporary_dir / "source_transition_indices.npy",
+            np.arange(schema.n_transitions, dtype=np.int64),
+        )
+
+        observations = handle["observations"]
+        next_observations = handle["next_obs"]
+        source_chunk = int(observations.chunks[0]) if observations.chunks else 1024
+
+        for block_start in range(0, schema.n_transitions, source_chunk):
+            block_end = min(block_start + source_chunk, schema.n_transitions)
+            resized_observations = _resize_batch(
+                observations[block_start:block_end],
+                config.height,
+                config.width,
+                config.workers,
+            )
+
+            first_episode = int(
+                np.searchsorted(offsets[1:], block_start, side="right")
+            )
+            last_episode = int(
+                np.searchsorted(offsets[1:], block_end - 1, side="right")
+            )
+            for episode in range(first_episode, last_episode + 1):
+                start = max(block_start, int(offsets[episode]))
+                end = min(block_end, int(offsets[episode + 1]))
+                source_slice = slice(start - block_start, end - block_start)
+                output_start = start + episode
+                frames_out[output_start : output_start + (end - start)] = (
+                    resized_observations[source_slice]
+                )
+
+            terminal_episodes = np.flatnonzero(
+                (offsets[1:] - 1 >= block_start)
+                & (offsets[1:] - 1 < block_end)
+            )
+            if terminal_episodes.size:
+                terminal_indices = offsets[terminal_episodes + 1] - 1
+                terminal_frames = _resize_batch(
+                    next_observations[terminal_indices.tolist()],
+                    config.height,
+                    config.width,
+                    config.workers,
+                )
+                for frame, episode, transition_end in zip(
+                    terminal_frames,
+                    terminal_episodes,
+                    offsets[terminal_episodes + 1],
+                ):
+                    frames_out[int(transition_end) + int(episode)] = frame
+
+        frames_out.flush()
+        del frames_out
+
+    metadata = {
+        "format_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_name": input_path.name,
+        "source_size_bytes": input_path.stat().st_size,
+        "source_frame_shape": list(schema.frame_shape),
+        "n_transitions": schema.n_transitions,
+        "n_trajectories": n_trajectories,
+        "n_frames": frame_count,
+        "frame_shape": [config.height, config.width, 3],
+        "history": config.history,
+        "frame_skip": 4,
+        "n_actions": schema.n_actions,
+        "action_names": list(ACTION_NAMES[: schema.n_actions]),
+        "break_indices": sorted(int(index) for index in config.break_indices),
+        "split_seed": config.split_seed,
+        "split_fractions": list(config.split_fractions),
+        "resize": "opencv.INTER_AREA",
+        "python_version": platform.python_version(),
+        "numpy_version": np.__version__,
+        "h5py_version": h5py.__version__,
+        "opencv_version": cv2.__version__,
+    }
+    metadata["sha256"] = {
+        name: _sha256(temporary_dir / name) for name in ARRAY_FILES
+    }
+    (temporary_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (temporary_dir / "README.md").write_text(
+        _dataset_card(metadata), encoding="utf-8"
+    )
+    return metadata
+
+
+def validate_cache(path: str | Path) -> dict:
+    """Verify cache structure, metadata, and artifact hashes."""
+    cache_path = Path(path)
+    try:
+        metadata = json.loads(
+            (cache_path / "metadata.json").read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, json.JSONDecodeError) as error:
+        raise CacheValidationError("cache metadata is missing or invalid") from error
+
+    try:
+        frames = np.load(cache_path / "frames.npy", mmap_mode="r")
+        actions = np.load(cache_path / "actions.npy", mmap_mode="r")
+        rewards = np.load(cache_path / "rewards.npy", mmap_mode="r")
+        offsets = np.load(cache_path / "episode_offsets.npy")
+        splits = np.load(cache_path / "episode_splits.npy")
+        source_indices = np.load(
+            cache_path / "source_transition_indices.npy", mmap_mode="r"
+        )
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise CacheValidationError("cache arrays are missing or unreadable") from error
+
+    expected_frame_shape = (
+        int(metadata["n_frames"]),
+        *tuple(int(value) for value in metadata["frame_shape"]),
+    )
+    if frames.shape != expected_frame_shape or frames.dtype != np.uint8:
+        raise CacheValidationError("frames.npy shape or dtype does not match metadata")
+    if not (
+        actions.shape
+        == rewards.shape
+        == source_indices.shape
+        == (int(metadata["n_transitions"]),)
+    ):
+        raise CacheValidationError("transition arrays have inconsistent shapes")
+    if offsets.shape != (int(metadata["n_trajectories"]) + 1,):
+        raise CacheValidationError("episode offsets do not match trajectory count")
+    if int(offsets[0]) != 0 or int(offsets[-1]) != int(metadata["n_transitions"]):
+        raise CacheValidationError("episode offsets do not cover all transitions")
+    if np.any(np.diff(offsets) <= 0):
+        raise CacheValidationError("episode offsets must be strictly increasing")
+    if splits.shape != (int(metadata["n_trajectories"]),):
+        raise CacheValidationError("episode splits do not match trajectory count")
+    if not set(np.unique(splits).tolist()).issubset({0, 1, 2}):
+        raise CacheValidationError("episode splits contain unknown labels")
+
+    hashes = metadata.get("sha256")
+    if not isinstance(hashes, dict) or set(hashes) != set(ARRAY_FILES):
+        raise CacheValidationError("cache metadata has an invalid SHA-256 manifest")
+    for name, expected in hashes.items():
+        if _sha256(cache_path / name) != expected:
+            raise CacheValidationError(f"SHA-256 mismatch for {name}")
+
+    return metadata
+
+
+def convert_dataset(config: ConversionConfig) -> Path:
+    """Create, validate, and atomically publish a local memory-mapped cache."""
+    _validate_conversion_config(config)
+    input_path = Path(config.input_path).resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(f"input HDF5 file does not exist: {input_path}")
+
+    output = Path(config.output_dir).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(
+            f"refusing to replace non-empty output directory: {output}"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.partial-", dir=output.parent)
+    )
+
+    resolved_config = ConversionConfig(
+        input_path=input_path,
+        output_dir=output,
+        height=config.height,
+        width=config.width,
+        history=config.history,
+        break_indices=config.break_indices,
+        split_seed=config.split_seed,
+        split_fractions=config.split_fractions,
+        workers=config.workers,
+    )
+    _write_cache(resolved_config, temporary)
+    validate_cache(temporary)
+    if output.exists():
+        output.rmdir()
+    os.replace(temporary, output)
+    return output
