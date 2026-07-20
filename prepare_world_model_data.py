@@ -13,8 +13,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert Mario HDF5 transitions into an H100-friendly NumPy cache"
     )
-    parser.add_argument("input_h5", type=Path)
-    parser.add_argument("output_dir", type=Path)
+    parser.add_argument("--input_h5", type=Path)
+    parser.add_argument("--output_dir", type=Path)
     parser.add_argument("--height", type=int, default=120)
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--history", type=int, default=4)
