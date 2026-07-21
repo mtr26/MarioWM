@@ -8,6 +8,7 @@ import os
 import platform
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -239,7 +240,8 @@ def _dataset_card(metadata: dict) -> str:
 def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
     cv2.setNumThreads(1)
     input_path = Path(config.input_path)
-    with h5py.File(input_path, "r") as handle:
+    with ExitStack() as stack:
+        handle = stack.enter_context(h5py.File(input_path, "r"))
         source_schema = validate_source(handle)
         if source_schema.n_actions > 256:
             raise SourceValidationError("at most 256 discrete actions are supported")
@@ -295,18 +297,21 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
         trajectory_ends = set((offsets[1:] - 1).tolist())
         pending_next_frame: np.ndarray | None = None
         pending_transition: int | None = None
-        conversion_progress = tqdm(
-            total=n_transitions,
-            desc="Converting transitions",
-            unit="transition",
-            unit_scale=True,
-            dynamic_ncols=True,
+        conversion_progress = stack.enter_context(
+            tqdm(
+                total=n_transitions,
+                desc="Converting transitions",
+                unit="transition",
+                unit_scale=True,
+                dynamic_ncols=True,
+            )
         )
 
         for block_start in range(0, n_transitions, source_chunk):
             block_end = min(block_start + source_chunk, n_transitions)
             observation_block = observations[block_start:block_end]
             next_observation_block = next_observations[block_start:block_end]
+            had_pending_transition = pending_next_frame is not None
 
             if pending_next_frame is not None and not np.array_equal(
                 pending_next_frame, observation_block[0]
@@ -384,9 +389,14 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
                     offsets[terminal_episodes + 1],
                 ):
                     frames_out[int(transition_end) + int(episode)] = frame
-            conversion_progress.update(block_end - block_start)
+            completed_transitions = (
+                block_end
+                - block_start
+                + int(had_pending_transition)
+                - int(pending_next_frame is not None)
+            )
+            conversion_progress.update(completed_transitions)
 
-        conversion_progress.close()
         frames_out.flush()
         del frames_out
 

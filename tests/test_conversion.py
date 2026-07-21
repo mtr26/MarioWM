@@ -105,7 +105,7 @@ def test_convert_dataset_writes_unique_trajectory_frames(synthetic_h5, tmp_path)
 
 
 def test_convert_dataset_rejects_unmarked_temporal_discontinuity(
-    synthetic_h5, tmp_path
+    synthetic_h5, tmp_path, capsys
 ):
     with h5py.File(synthetic_h5, "a") as handle:
         handle["next_obs"][7] = np.full(
@@ -125,6 +125,10 @@ def test_convert_dataset_rejects_unmarked_temporal_discontinuity(
             )
         )
 
+    stderr = capsys.readouterr().err
+    assert "7.00/12.0" in stderr
+    assert "8.00/12.0" not in stderr
+
 
 def test_convert_dataset_reports_conversion_and_hashing_progress(
     synthetic_h5, tmp_path, capsys
@@ -141,10 +145,13 @@ def test_convert_dataset_reports_conversion_and_hashing_progress(
         )
     )
 
-    stderr = capsys.readouterr().err
-    assert "Converting transitions" in stderr
-    assert "Hashing cache" in stderr
-    assert stderr.count("100%") >= 2
+    stderr_lines = capsys.readouterr().err.replace("\r", "\n").splitlines()
+    conversion_lines = [
+        line for line in stderr_lines if "Converting transitions" in line
+    ]
+    hashing_lines = [line for line in stderr_lines if "Hashing cache" in line]
+    assert any("100%" in line for line in conversion_lines)
+    assert any("100%" in line for line in hashing_lines)
 
 
 def test_convert_dataset_refuses_nonempty_output(synthetic_h5, tmp_path):
