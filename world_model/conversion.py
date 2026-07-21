@@ -16,6 +16,7 @@ from typing import Any, Sequence
 import cv2
 import h5py
 import numpy as np
+from tqdm.auto import tqdm
 
 
 REQUIRED_DATASETS = ("observations", "next_obs", "actions", "rewards", "dones")
@@ -199,11 +200,17 @@ def _resize_batch(
     return np.stack(resized).astype(np.uint8, copy=False)
 
 
-def _sha256(path: Path, block_size: int = 8 * 1024 * 1024) -> str:
+def _sha256(
+    path: Path,
+    block_size: int = 8 * 1024 * 1024,
+    progress: Any = None,
+) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while block := stream.read(block_size):
             digest.update(block)
+            if progress is not None:
+                progress.update(len(block))
     return digest.hexdigest()
 
 
@@ -288,6 +295,13 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
         trajectory_ends = set((offsets[1:] - 1).tolist())
         pending_next_frame: np.ndarray | None = None
         pending_transition: int | None = None
+        conversion_progress = tqdm(
+            total=n_transitions,
+            desc="Converting transitions",
+            unit="transition",
+            unit_scale=True,
+            dynamic_ncols=True,
+        )
 
         for block_start in range(0, n_transitions, source_chunk):
             block_end = min(block_start + source_chunk, n_transitions)
@@ -370,7 +384,9 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
                     offsets[terminal_episodes + 1],
                 ):
                     frames_out[int(transition_end) + int(episode)] = frame
+            conversion_progress.update(block_end - block_start)
 
+        conversion_progress.close()
         frames_out.flush()
         del frames_out
 
@@ -400,9 +416,19 @@ def _write_cache(config: ConversionConfig, temporary_dir: Path) -> dict:
         "h5py_version": h5py.__version__,
         "opencv_version": cv2.__version__,
     }
-    metadata["sha256"] = {
-        name: _sha256(temporary_dir / name) for name in ARRAY_FILES
-    }
+    hash_total = sum((temporary_dir / name).stat().st_size for name in ARRAY_FILES)
+    with tqdm(
+        total=hash_total,
+        desc="Hashing cache",
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        dynamic_ncols=True,
+    ) as hash_progress:
+        metadata["sha256"] = {
+            name: _sha256(temporary_dir / name, progress=hash_progress)
+            for name in ARRAY_FILES
+        }
     (temporary_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

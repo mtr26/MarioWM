@@ -126,6 +126,27 @@ def test_convert_dataset_rejects_unmarked_temporal_discontinuity(
         )
 
 
+def test_convert_dataset_reports_conversion_and_hashing_progress(
+    synthetic_h5, tmp_path, capsys
+):
+    convert_dataset(
+        ConversionConfig(
+            input_path=synthetic_h5,
+            output_dir=tmp_path / "cache",
+            height=4,
+            width=6,
+            history=2,
+            break_indices=(6,),
+            workers=1,
+        )
+    )
+
+    stderr = capsys.readouterr().err
+    assert "Converting transitions" in stderr
+    assert "Hashing cache" in stderr
+    assert stderr.count("100%") >= 2
+
+
 def test_convert_dataset_refuses_nonempty_output(synthetic_h5, tmp_path):
     output = tmp_path / "cache"
     output.mkdir()
