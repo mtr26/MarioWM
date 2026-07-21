@@ -110,6 +110,8 @@ def test_training_cli_writes_best_and_latest_checkpoints(synthetic_h5, tmp_path)
     assert (output / "latest.pt").is_file()
     assert (output / "best.pt").is_file()
     assert (output / "previews" / "epoch-0000.png").is_file()
+    assert "Training epoch 1/1" in result.stderr
+    assert "Validating epoch 1/1" in result.stderr
 
 
 def test_resume_preserves_best_checkpoint_without_improvement(

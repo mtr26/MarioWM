@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
+from tqdm.auto import tqdm
 
 from world_model.checkpointing import load_checkpoint, save_checkpoint
 from world_model.config import DataConfig, ExperimentConfig, OptimizerConfig, RuntimeConfig
@@ -188,18 +189,24 @@ def run_training_loop(
 
     try:
         for epoch in range(start_epoch, config.runtime.epochs):
-            train_metrics, global_step = train_one_epoch(
-                model=train_model,
-                loader=train_loader,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                ema=ema,
-                device=device,
-                use_bfloat16=config.runtime.use_bfloat16,
-                channels_last=config.runtime.channels_last,
-                gradient_clip=config.optimizer.gradient_clip,
-                global_step=global_step,
-            )
+            with tqdm(
+                train_loader,
+                desc=f"Training epoch {epoch + 1}/{config.runtime.epochs}",
+                unit="batch",
+                dynamic_ncols=True,
+            ) as training_progress:
+                train_metrics, global_step = train_one_epoch(
+                    model=train_model,
+                    loader=training_progress,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    ema=ema,
+                    device=device,
+                    use_bfloat16=config.runtime.use_bfloat16,
+                    channels_last=config.runtime.channels_last,
+                    gradient_clip=config.optimizer.gradient_clip,
+                    global_step=global_step,
+                )
             writer.add_scalar("train/l1", train_metrics["l1"], global_step)
             writer.add_scalar(
                 "train/learning_rate", optimizer.param_groups[0]["lr"], global_step
@@ -212,14 +219,23 @@ def run_training_loop(
             )
             if should_validate:
                 with ema.average_parameters(raw_model):
-                    validation_metrics = evaluate(
-                        model=raw_model,
-                        loader=validation_loader,
-                        device=device,
-                        use_bfloat16=config.runtime.use_bfloat16,
-                        channels_last=config.runtime.channels_last,
-                        n_actions=config.model.n_actions,
-                    )
+                    with tqdm(
+                        validation_loader,
+                        desc=(
+                            f"Validating epoch {epoch + 1}/"
+                            f"{config.runtime.epochs}"
+                        ),
+                        unit="batch",
+                        dynamic_ncols=True,
+                    ) as validation_progress:
+                        validation_metrics = evaluate(
+                            model=raw_model,
+                            loader=validation_progress,
+                            device=device,
+                            use_bfloat16=config.runtime.use_bfloat16,
+                            channels_last=config.runtime.channels_last,
+                            n_actions=config.model.n_actions,
+                        )
                     _validation_preview(
                         raw_model,
                         validation_loader,
